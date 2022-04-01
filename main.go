@@ -3,6 +3,7 @@ package main
 import (
 	"crypto-arbitrage/arbitrage"
 	"crypto-arbitrage/mailer"
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -10,10 +11,12 @@ import (
 )
 
 var (
-	startingARS   float64 = 25_000
-	minimumProfit         = 0.001 // 0.1%
+	minARS        float64
+	stepARS       float64
+	maxARS        float64
+	minimumProfit float64
 
-	interval = 5 * time.Second
+	interval time.Duration
 
 	// sender configs
 	email = os.Getenv("CRYPTO_EMAIL")
@@ -22,22 +25,59 @@ var (
 )
 
 func main() {
+	flag.Float64Var(&minARS, "min-ars", 10_000, "")
+	flag.Float64Var(&stepARS, "step-ars", 10_000, "")
+	flag.Float64Var(&maxARS, "max-ars", 100_000, "")
+
+	flag.Float64Var(&minimumProfit, "min-profit", 0, "")
+	intervalDuration := flag.String("interval", "1m", "")
+	flag.Parse()
+	var err error
+	interval, err = time.ParseDuration(*intervalDuration)
+	if err != nil {
+		panic(err)
+	}
+
 	t := time.NewTicker(interval)
 	for {
-		<-t.C
-		report, profit, err := arbitrage.GenerateReport(startingARS)
-		if err != nil {
+		if err := iteration(); err != nil {
 			log.Println(err)
-			continue
 		}
-		fmt.Print(report)
+		<-t.C
+	}
+}
+
+func iteration() error {
+	lemonRate, buenbitRate, err := arbitrage.GetRates()
+	if err != nil {
+		return err
+	}
+	// start testing until the first one that generates profit
+	var (
+		startingARS = minARS
+		report      string
+		profit      float64
+	)
+	for startingARS <= maxARS {
+		report, profit, err = arbitrage.GenerateReport(lemonRate, buenbitRate, startingARS)
+		if err != nil {
+			return err
+		}
+
 		if profit > startingARS*minimumProfit {
-			// jackpot!
+			fmt.Println("### JACKPOT!!! ###")
+			fmt.Print(report)
 			err := mailer.NewClient(email, pass).Send(to, report)
 			if err != nil {
-				log.Println(err)
-				continue
+				return err
 			}
+			fmt.Println("Email sent")
+			return nil
 		}
+
+		startingARS += stepARS
 	}
+	fmt.Println("### Found nothing, last report was: ###")
+	fmt.Print(report)
+	return nil
 }
